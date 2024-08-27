@@ -1,27 +1,65 @@
+require("@openzeppelin/hardhat-upgrades");
+const { ethers } = require("hardhat");
+const { sendShieldedTransaction } = require("../utils/swisstronik");
+
 async function main() {
-  const [deployer] = await ethers.getSigners();
+  const [owner] = await ethers.getSigners();
+  console.log("Deployer:", owner.address);
 
-  console.log("Deploying contracts with the account:", deployer.address);
-
+  // contract 1
   const Swisstronik = await ethers.getContractFactory("Swisstronik");
   const swisstronik = await Swisstronik.deploy();
   await swisstronik.waitForDeployment();
-  console.log("Non-proxy Swisstronik deployed to:", swisstronik.target);
-  const upgradedSwisstronik = await upgrades.deployProxy(
-    Swisstronik,
-    ["Hello Swisstronik"],
-    { kind: "transparent" }
+  console.log("Contract address 1 deployed to:", swisstronik.target);
+
+  // proxy admin
+  const ProxyAdmin = await ethers.getContractFactory("ProxyAdmin");
+  const proxyAdmin = await ProxyAdmin.deploy(owner.address);
+  await proxyAdmin.waitForDeployment();
+  console.log("ProxyAdmin address deployed to:", proxyAdmin.target);
+
+  // proxy
+  const TransparentUpgradeableProxy = await ethers.getContractFactory(
+    "TransparentUpgradeableProxy"
   );
-  await upgradedSwisstronik.waitForDeployment();
-  console.log("Proxy Swisstronik deployed to:", upgradedSwisstronik.target);
+  const proxy = await TransparentUpgradeableProxy.deploy(
+    swisstronik.target,
+    proxyAdmin.target,
+    Uint8Array.from([])
+  );
+
+  console.log(`👉 Deployed proxy contract address: ${proxy.target}`);
+
+  // contract 2
+  const Swisstronik2 = await ethers.getContractFactory("Swisstronik2");
+  const swisstronik2 = await Swisstronik2.deploy();
+  await swisstronik2.waitForDeployment();
+  console.log(`Contract address 2 deployed to: ${swisstronik2.target}`);
+
+  // upgrade
+  const upgrade = await sendShieldedTransaction(
+    owner,
+    proxyAdmin.target,
+    proxyAdmin.interface.encodeFunctionData("upgradeAndCall", [
+      proxy.target,
+      swisstronik2.target,
+      Uint8Array.from([]),
+    ]),
+    0
+  );
+  await upgrade.wait();
+
   console.log(
-    `Deployment transaction hash: https://explorer-evm.testnet.swisstronik.com/address/${upgradedSwisstronik.target}`
+    `👉 Contract implementation replacement transaction URL: https://explorer-evm.testnet.swisstronik.com/tx/${upgrade.hash}`
   );
+
+  // await run("verify:verify", {
+  //   address: contract.target,
+  //   constructorArguments: [],
+  // });
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
